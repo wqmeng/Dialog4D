@@ -1,6 +1,6 @@
 # Dos fundamentos de diálogos FMX ao Dialog4D
 
-**Version:** 1.0.1 — 2026-05-01
+**Version:** 1.0.2 — 2026-06-21
 
 ### Uma jornada conceitual pelos diálogos FMX, fluxo assíncrono e coordenação explícita de diálogos
 
@@ -630,6 +630,35 @@ TDialog4D.CloseDialog(MyForm, mrCancel);
 Isso solicita o fechamento do diálogo Dialog4D ativo para o formulário indicado.
 O fechamento visual real é encaminhado para a main thread quando necessário. A
 telemetria registra o fechamento como `crProgrammatic`.
+
+### Fechar o formulário hospedeiro a partir do callback de resultado
+
+Outro cenário comum de fechamento não é fechar o diálogo programaticamente, mas
+fechar o formulário que hospedou o diálogo depois que o usuário confirma uma
+ação em nível de aplicação.
+
+Por exemplo, uma confirmação de saída da aplicação pode fechar a main form a
+partir do callback de resultado:
+
+```delphi
+TDialog4D.MessageDialogAsync(
+  'Exit the application?',
+  TMsgDlgType.mtConfirmation,
+  [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+  TMsgDlgBtn.mbCancel,
+  procedure(const AResult: TModalResult)
+  begin
+    if AResult = mrOk then
+      Close;
+  end);
+```
+
+Esse é um cenário suportado pelo Dialog4D. O callback continua sendo o ponto de
+continuação da decisão do usuário, e o Dialog4D acompanha o ciclo de vida do
+formulário hospedeiro para descartar com segurança a fila e o estado de
+requisições daquele formulário quando ele começa o teardown. O BasicDemo
+incluído no projeto contém esse caso como cenário de regressão de ciclo de
+vida.
 
 ### Tema visual como identidade da aplicação
 

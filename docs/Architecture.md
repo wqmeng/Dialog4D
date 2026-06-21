@@ -1,6 +1,6 @@
 # Dialog4D Architecture
 
-**Version:** 1.0.1 — 2026-05-01
+**Version:** 1.0.2 — 2026-06-21
 
 Dialog4D is an FMX-rendered asynchronous dialog library with explicit roles,
 state transitions, request snapshots, per-form queueing, and lifecycle
@@ -26,71 +26,88 @@ overall pipeline.
 ## 1. Architectural map
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 55, 'rankSpacing': 70}}}%%
 flowchart LR
-    U[Caller]
+    U[&nbsp;Caller&nbsp;]
 
     subgraph Public["Public facade (TDialog4D)"]
         direction TB
-        F[Class methods<br/>MessageDialogAsync<br/>CloseDialog<br/>Configure*]
-        G[Class vars<br/>FTheme<br/>FTextProvider<br/>FTelemetry]
+        F[&nbsp;Class methods&nbsp;<br/>&nbsp;MessageDialogAsync&nbsp;<br/>&nbsp;CloseDialog&nbsp;<br/>&nbsp;Configure*&nbsp;]
+        G[&nbsp;Class vars&nbsp;<br/>&nbsp;FTheme&nbsp;<br/>&nbsp;FTextProvider&nbsp;<br/>&nbsp;FTelemetry&nbsp;]
     end
 
     subgraph Req["Request snapshot"]
         direction TB
-        R[TDialog4DRequest<br/>theme copy<br/>provider reference<br/>telemetry sink<br/>callback<br/>button definitions]
+        R[&nbsp;TDialog4DRequest&nbsp;<br/>&nbsp;theme copy&nbsp;<br/>&nbsp;provider reference&nbsp;<br/>&nbsp;telemetry sink&nbsp;<br/>&nbsp;callback&nbsp;<br/>&nbsp;button definitions&nbsp;]
     end
 
     subgraph Reg["Registry (TDialog4DRegistry)"]
         direction TB
-        M[FMap<br/>Form -> FormState]
-        C[FCrit<br/>TCriticalSection]
+        M[&nbsp;FMap&nbsp;<br/>&nbsp;Form -> FormState&nbsp;]
+        C[&nbsp;FCrit&nbsp;<br/>&nbsp;TCriticalSection&nbsp;]
     end
 
-    subgraph FormState["TDialog4DFormState (per form)"]
+    subgraph FormState["TDialog4DFormState<br/>(per form)"]
         direction TB
-        Q[Queue<br/>FIFO of requests]
-        A[Active flag]
-        OD[OwnerDestroying flag]
-        AR[ActiveRequest]
-        AH[ActiveHost]
-        RH[Registry form hook]
+        Q[&nbsp;Queue&nbsp;<br/>&nbsp;FIFO of requests&nbsp;]
+        A[&nbsp;Active flag&nbsp;]
+        OD[&nbsp;OwnerDestroying flag&nbsp;]
+        AR[&nbsp;ActiveRequest&nbsp;]
+        AH[&nbsp;ActiveHost&nbsp;]
+        RH[&nbsp;Registry form hook&nbsp;]
     end
 
-    Host[TDialog4DHostFMX<br/>Visual host]
-    HH[Host form hook<br/>owned by parent form]
-    UI[UI / Main Thread]
-    Await[TDialog4DAwait<br/>Worker-thread await helper]
-    Worker[Worker thread]
+    Host[&nbsp;TDialog4DHostFMX&nbsp;<br/>&nbsp;Visual host&nbsp;]
+    HH[&nbsp;Host form hook&nbsp;<br/>&nbsp;owned by parent form&nbsp;]
+    UI[&nbsp;UI / Main Thread&nbsp;]
+    Await[&nbsp;TDialog4DAwait&nbsp;<br/>&nbsp;Worker-thread await helper&nbsp;]
+    Worker[&nbsp;Worker thread&nbsp;]
 
-    U -->|MessageDialogAsync| F
-    U -->|CloseDialog| F
-    F -->|capture snapshot| G
-    F -->|build request| R
-    F -->|main-thread execution path| UI
-    UI -->|EnqueueOrShow| Reg
+    U -->|&nbsp;MessageDialogAsync&nbsp;| F
+    U -->|&nbsp;CloseDialog&nbsp;| F
+    F -->|&nbsp;capture snapshot&nbsp;| G
+    F -->|&nbsp;build request&nbsp;| R
+    F -->|&nbsp;main-thread execution path&nbsp;| UI
+    UI -->|&nbsp;EnqueueOrShow&nbsp;| Reg
 
-    Reg -->|under<br/>FCrit| FormState
-    Reg -->|create on <br/>first request| RH
+    Reg -->|&nbsp;under&nbsp;<br/>&nbsp;FCrit&nbsp;| FormState
+    Reg -->|&nbsp;create on&nbsp;<br/>&nbsp;first request&nbsp;| RH
 
-    FormState -->|publish active| AH
-    FormState -->|dispatch request| Host
+    FormState -->|&nbsp;publish active&nbsp;| AH
+    FormState -->|&nbsp;dispatch request&nbsp;| Host
 
-    Host -->|owns FMX overlay| UI
-    Host -->|user interaction| UI
-    Host -->|internal close callback| F
-    Host -->|telemetry sink from request| R
-    Host -->|create while active| HH
+    Host -->|&nbsp;owns FMX overlay&nbsp;| UI
+    Host -->|&nbsp;user interaction&nbsp;| UI
+    Host -->|&nbsp;internal close callback&nbsp;| F
+    Host -->|&nbsp;telemetry sink from request&nbsp;| R
+    Host -->|&nbsp;create while active&nbsp;| HH
 
-    UI -->|user callback + cleanup chain| Reg
-    Reg -->|drain next request| Host
+    UI -->|&nbsp;user callback + cleanup chain&nbsp;| Reg
+    Reg -->|&nbsp;drain next request&nbsp;| Host
 
-    RH -.->|on form destroy<br/>queued registry cleanup| Reg
-    HH -.->|on form destroy<br/>owner-destroying host cleanup| Host
+    RH -.->|&nbsp;on form destroy&nbsp;<br/>&nbsp;mark state + cleanup&nbsp;<br/>&nbsp;inline on main thread&nbsp;| Reg
+    HH -.->|&nbsp;on form destroy&nbsp;<br/>&nbsp;owner-destroying host cleanup&nbsp;| Host
 
-    Worker -->|MessageDialogOnWorker| Await
-    Await -->|queue show request| UI
-    Await -->|wait on event| Worker
-    Host -->|signal result/status| Await
+    Worker -->|&nbsp;MessageDialogOnWorker&nbsp;| Await
+    Await -->|&nbsp;queue show request&nbsp;| UI
+    Await -->|&nbsp;wait on event&nbsp;| Worker
+    Host -->|&nbsp;signal result/status&nbsp;| Await
+
+    classDef caller    fill:#E8EEF6,stroke:#34507A,color:#1C2C42;
+    classDef facade    fill:#E6F2EA,stroke:#2E7D46,color:#16361F;
+    classDef request   fill:#FFF4C2,stroke:#C9A227,color:#000000;
+    classDef registry  fill:#F1E9F6,stroke:#6E3E8A,color:#311643;
+    classDef formstate fill:#E4F1F1,stroke:#2C7A78,color:#143433;
+    classDef host      fill:#FBE9EA,stroke:#AE3A44,color:#441318;
+    classDef thread    fill:#ECECEC,stroke:#5F5F5F,color:#232323;
+
+    class U caller;
+    class F,G facade;
+    class R request;
+    class M,C registry;
+    class Q,A,OD,AR,AH,RH formstate;
+    class Host,HH host;
+    class UI,Await,Worker thread;
 ```
 
 ### Reading the map
@@ -127,8 +144,10 @@ flowchart LR
   animation path, close pipeline, and per-instance telemetry emission.
 
 - **Form hooks**: there are two distinct hook responsibilities:
-  - the registry hook marks the per-form state as owner-destroying and then
-    schedules registry cleanup when the parent form is destroyed;
+  - the registry hook marks the per-form state as owner-destroying and cleans
+    the registry state when the parent form is destroyed. When the hook is
+    already running on the main thread, cleanup is performed inline; the queued
+    path remains only as a defensive fallback for off-main-thread destruction;
   - the host hook handles owner-destroying cleanup for the active visual host.
 
 - **Await layer** (`TDialog4DAwait`): optional worker-thread helper built on top
@@ -145,6 +164,7 @@ flowchart LR
 ## 2. Main flow: from request to result callback
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'Segoe UI, Helvetica, Arial, sans-serif','background':'#FFFFFF','actorBkg':'#ECEFF4','actorBorder':'#5F6B7A','actorTextColor':'#1B2A3A','actorLineColor':'#9AA4B2','signalColor':'#41505F','signalTextColor':'#1F2937','labelBoxBkgColor':'#FFF4C2','labelBoxBorderColor':'#C9A227','labelTextColor':'#000000','loopTextColor':'#1F2937','noteBkgColor':'#FFF8D6','noteBorderColor':'#C9A227','noteTextColor':'#1F2937','activationBkgColor':'#E4F1F1','activationBorderColor':'#2C7A78','sequenceNumberColor':'#FFFFFF'}}}%%
 sequenceDiagram
     autonumber
     participant Caller
@@ -336,32 +356,41 @@ handling.
 ## 4. Alternate paths: how a dialog can close
 
 ```mermaid
+%%{init: {'flowchart': {'nodeSpacing': 55, 'rankSpacing': 70}}}%%
 flowchart TD
-    A[Dialog is opening or open] --> B{What triggered the close?}
+    A[&nbsp;Dialog is opening or open&nbsp;] --> B{What triggered the close?}
 
-    B -->|User clicked a button| C[crButton<br/>Capture button metadata]
-    B -->|Backdrop tap<br/>cancelable + cancel-like button| D[crBackdrop<br/>Capture cancel-like button metadata]
-    B -->|Enter key on desktop| E[crKeyEnter<br/>Capture default button metadata]
-    B -->|Esc key on desktop<br/>or Android Back| F[crKeyEsc<br/>Capture cancel-like button metadata]
-    B -->|TDialog4D.CloseDialog| G[crProgrammatic<br/>No triggered button metadata]
-    B -->|Parent form destroying| H[crOwnerDestroying<br/>Suppress application callback]
+    B -->|&nbsp;User clicked a button&nbsp;| C[&nbsp;crButton&nbsp;<br/>&nbsp;Capture button metadata&nbsp;]
+    B -->|Backdrop tap<br/>cancelable + cancel-like button| D[&nbsp;crBackdrop&nbsp;<br/>&nbsp;Capture cancel-like button metadata&nbsp;]
+    B -->|&nbsp;Enter key on desktop&nbsp;| E[&nbsp;crKeyEnter&nbsp;<br/>&nbsp;Capture default button metadata&nbsp;]
+    B -->|&nbsp;Esc key on desktop&nbsp;<br/>or Android Back| F[&nbsp;crKeyEsc&nbsp;<br/>&nbsp;Capture cancel-like button metadata&nbsp;]
+    B -->|&nbsp;TDialog4D.CloseDialog&nbsp;| G[&nbsp;crProgrammatic&nbsp;<br/>&nbsp;No triggered button metadata&nbsp;]
+    B -->|&nbsp;Parent form destroying&nbsp;| H[&nbsp;crOwnerDestroying&nbsp;<br/>&nbsp;Suppress application callback&nbsp;]
 
-    C --> I[CloseWithResult]
+    C --> I[&nbsp;CloseWithResult&nbsp;]
     D --> I
     E --> I
     F --> I
     G --> I
 
-    I --> I1[Disable hit-testing]
-    I1 --> I2[Store result]
-    I2 --> I3[Emit tkCloseRequested]
-    I3 --> I4[Animate or defer close]
-    I4 --> I5[Finalize close]
+    I --> I1[&nbsp;Disable hit-testing&nbsp;]
+    I1 --> I2[&nbsp;Store result&nbsp;]
+    I2 --> I3[&nbsp;Emit tkCloseRequested&nbsp;]
+    I3 --> I4[&nbsp;Animate or defer close&nbsp;]
+    I4 --> I5[&nbsp;Finalize close&nbsp;]
 
-    H --> H1[NotifyOwnerDestroying]
-    H1 --> H2[Emit tkOwnerDestroying]
-    H2 --> H3[Finalize owner-destroying cleanup]
-    H3 --> H4[Suppress callbacks]
+    H --> H1[&nbsp;NotifyOwnerDestroying&nbsp;]
+    H1 --> H2[&nbsp;Emit tkOwnerDestroying&nbsp;]
+    H2 --> H3[&nbsp;Finalize owner-destroying cleanup&nbsp;]
+    H3 --> H4[&nbsp;Suppress callbacks&nbsp;]
+
+    classDef entry   fill:#ECECEC,stroke:#5F5F5F,color:#232323;
+    classDef normal  fill:#E6F2EA,stroke:#2E7D46,color:#16361F;
+    classDef destroy fill:#FBE9EA,stroke:#AE3A44,color:#441318;
+
+    class A,B entry;
+    class C,D,E,F,G,I,I1,I2,I3,I4,I5 normal;
+    class H,H1,H2,H3,H4 destroy;
 ```
 
 ### Contract by close path
@@ -433,6 +462,16 @@ stateDiagram-v2
       Callback either invoked
       or suppressed by lifecycle rules.
     end note
+
+    classDef closedState  fill:#ECECEC,stroke:#5F5F5F,color:#232323;
+    classDef openingState fill:#FFF4C2,stroke:#C9A227,color:#000000;
+    classDef openState    fill:#E6F2EA,stroke:#2E7D46,color:#16361F;
+    classDef closingState fill:#FBE9EA,stroke:#AE3A44,color:#441318;
+
+    class dgsClosed closedState
+    class dgsOpening openingState
+    class dgsOpen openState
+    class dgsClosing closingState
 ```
 
 ### Why hit-tests are disabled at close start
@@ -465,6 +504,7 @@ Two visual-host paths are intentionally different on Android:
 ## 6. Per-form FIFO queue flow
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'Segoe UI, Helvetica, Arial, sans-serif','background':'#FFFFFF','actorBkg':'#ECEFF4','actorBorder':'#5F6B7A','actorTextColor':'#1B2A3A','actorLineColor':'#9AA4B2','signalColor':'#41505F','signalTextColor':'#1F2937','labelBoxBkgColor':'#FFF4C2','labelBoxBorderColor':'#C9A227','labelTextColor':'#000000','loopTextColor':'#1F2937','noteBkgColor':'#FFF8D6','noteBorderColor':'#C9A227','noteTextColor':'#1F2937','activationBkgColor':'#E4F1F1','activationBorderColor':'#2C7A78','sequenceNumberColor':'#FFFFFF'}}}%%
 sequenceDiagram
     autonumber
     participant Source as Caller(s)
@@ -551,7 +591,14 @@ while requests are queued, during close, or during application shutdown.
 Dialog4D uses form-owned hooks to keep the registry and host from keeping stale
 references to destroyed forms.
 
+In version 1.0.2, the registry-facing hook was tightened for Android teardown:
+when the hook destructor is already running on the main thread, per-form
+registry cleanup runs synchronously instead of being deferred to a later
+main-loop turn. The deferred path still exists only as a defensive fallback for
+unexpected off-main-thread teardown.
+
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'Segoe UI, Helvetica, Arial, sans-serif','background':'#FFFFFF','actorBkg':'#ECEFF4','actorBorder':'#5F6B7A','actorTextColor':'#1B2A3A','actorLineColor':'#9AA4B2','signalColor':'#41505F','signalTextColor':'#1F2937','labelBoxBkgColor':'#FFF4C2','labelBoxBorderColor':'#C9A227','labelTextColor':'#000000','loopTextColor':'#1F2937','noteBkgColor':'#FFF8D6','noteBorderColor':'#C9A227','noteTextColor':'#1F2937','activationBkgColor':'#E4F1F1','activationBorderColor':'#2C7A78','sequenceNumberColor':'#FFFFFF'}}}%%
 sequenceDiagram
     autonumber
     participant Form as Parent form
@@ -565,31 +612,86 @@ sequenceDiagram
 
     Form->>RegHook: owned component is destroyed
     RegHook->>Registry: MarkFormDestroying(form)
-    RegHook->>UI: QueueOnMainThread(OnFormDestroyed)
 
-    Form->>HostHook: owned component is destroyed
-    HostHook->>Host: NotifyOwnerDestroying
-    HostHook->>Host: finalize owner-destroying cleanup
+    alt hook destruction is already on main thread
+        RegHook->>Registry: OnFormDestroyed(form) inline
+    else defensive fallback
+        RegHook->>UI: QueueOnMainThread(OnFormDestroyed)
+        UI->>Registry: OnFormDestroyed(form)
+    end
 
-    UI->>Registry: OnFormDestroyed(form)
     Registry->>Registry: remove FormState under FCrit
     Registry->>Registry: drain pending requests
     Registry->>Registry: free ActiveRequest if still owned by state
     Registry->>Registry: clear ActiveHost pointer
+
+    Form->>HostHook: owned component is destroyed
+    HostHook->>Host: NotifyOwnerDestroying
+    HostHook->>Host: finalize owner-destroying cleanup
 ```
 
-### Why registry cleanup is deferred
+### Why the registry hook marks before cleanup
 
-The registry hook first marks the per-form state as owner-destroying, then
-queues `OnFormDestroyed` instead of performing full registry cleanup inline
-during the form's component destruction.
+The registry hook first marks the per-form state as owner-destroying. This mark
+is intentionally performed before the form finishes tearing down.
 
 The early mark is important: it prevents later Dialog4D cleanup paths from
 invoking the application callback or draining the FIFO after the form has begun
 teardown.
 
-The deferred cleanup is also important: it lets the form continue its own
-destruction and allows registry cleanup to run from a clean main-thread cycle.
+A common example is an exit confirmation:
+
+```delphi
+TDialog4D.MessageDialogAsync(
+  'Exit the application?',
+  TMsgDlgType.mtConfirmation,
+  [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+  TMsgDlgBtn.mbCancel,
+  procedure(const AResult: TModalResult)
+  begin
+    if AResult = mrOk then
+      Close;
+  end);
+```
+
+This is a supported scenario. The callback closes the same form that hosted the
+dialog, so the registry state for that form must be marked as owner-destroying
+as soon as the form begins destruction.
+
+### Why registry cleanup is inline on the main thread
+
+The registry hook used to defer `OnFormDestroyed` through the main-thread queue.
+That was safe for ordinary form cleanup, but it left a narrow lifecycle window
+during Android application teardown: the form could be closing and the
+application could be finalizing while the registry cleanup closure was still
+waiting for a later main-loop turn.
+
+Version 1.0.2 changes the rule:
+
+- if the hook destructor is already running on the main thread, call
+  `OnFormDestroyed` inline;
+- if the hook destructor ever runs off the main thread, queue cleanup back to
+  the main thread as a defensive fallback.
+
+This keeps the normal FMX rule intact — registry cleanup still runs on the main
+thread — while avoiding late queued cleanup during main-form teardown.
+
+### What `OnFormDestroyed` is allowed to do
+
+`OnFormDestroyed` is a registry cleanup operation. It must not touch the FMX
+visual tree or inspect the form's visual children.
+
+Its job is limited to internal state:
+
+- remove the per-form state from the registry map under `FCrit`;
+- discard pending request snapshots for that form;
+- free `ActiveRequest` only if the form state still owns it;
+- clear the published `ActiveHost` pointer;
+- leave visual-host teardown to the host owner-destroying path or the normal
+  final callback path.
+
+This keeps form destruction safe even when it is re-entered from an application
+callback.
 
 ### Why active host pointers are not owned by form state
 
@@ -604,6 +706,29 @@ the queued final callback after a normal close.
 queued final callback. The queued final callback claims it under `FCrit` before
 use. If the form state is destroyed before that claim happens, the form-state
 destructor releases the request. These two paths are mutually exclusive.
+
+### Internal lifecycle trace
+
+`Dialog4D.pas` contains an optional internal trace switch for diagnosing
+registry/form teardown behavior:
+
+```delphi
+{.$DEFINE DIALOG4D_TRACE}
+```
+
+The trace is disabled by default. To enable it temporarily, change the directive
+to:
+
+```delphi
+{$DEFINE DIALOG4D_TRACE}
+```
+
+When enabled, Dialog4D writes lifecycle messages through `FMX.Types.Log.d` with
+the `[Dialog4D]` prefix. On Android, these messages can be captured with
+`adb logcat` and filtered together with native crash markers.
+
+The trace is intended for diagnostics only. It should normally remain disabled
+for release builds and for routine demo execution.
 
 ### What the application observes
 
@@ -647,6 +772,7 @@ Conceptually, `Dialog4D.Await` is a bridge between a blocking worker-side flow
 and a non-blocking UI-side dialog flow.
 
 ```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontFamily':'Segoe UI, Helvetica, Arial, sans-serif','background':'#FFFFFF','actorBkg':'#ECEFF4','actorBorder':'#5F6B7A','actorTextColor':'#1B2A3A','actorLineColor':'#9AA4B2','signalColor':'#41505F','signalTextColor':'#1F2937','labelBoxBkgColor':'#FFF4C2','labelBoxBorderColor':'#C9A227','labelTextColor':'#000000','loopTextColor':'#1F2937','noteBkgColor':'#FFF8D6','noteBorderColor':'#C9A227','noteTextColor':'#1F2937','activationBkgColor':'#E4F1F1','activationBorderColor':'#2C7A78','sequenceNumberColor':'#FFFFFF'}}}%%
 sequenceDiagram
     autonumber
     participant Worker as Worker thread

@@ -1,6 +1,6 @@
 # From FMX Dialog Basics to Dialog4D
 
-**Version:** 1.0.1 — 2026-05-01
+**Version:** 1.0.2 — 2026-06-21
 
 ### A conceptual journey through FMX dialogs, asynchronous flow, and explicit dialog coordination
 
@@ -616,6 +616,34 @@ TDialog4D.CloseDialog(MyForm, mrCancel);
 This requests closure of the active Dialog4D dialog for the given form. The
 actual visual close is marshalled to the main thread when needed. Telemetry
 records the close as `crProgrammatic`.
+
+### Closing the host form from a result callback
+
+Another common close scenario is not about closing the dialog programmatically,
+but about closing the form that hosted the dialog after the user confirms an
+application-level action.
+
+For example, an application exit confirmation may close the main form from the
+result callback:
+
+```delphi
+TDialog4D.MessageDialogAsync(
+  'Exit the application?',
+  TMsgDlgType.mtConfirmation,
+  [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+  TMsgDlgBtn.mbCancel,
+  procedure(const AResult: TModalResult)
+  begin
+    if AResult = mrOk then
+      Close;
+  end);
+```
+
+This is a supported Dialog4D scenario. The callback remains the continuation
+point for the user's decision, and Dialog4D tracks the host-form lifecycle so
+per-form queue and request state are discarded safely when the form begins
+teardown. The bundled BasicDemo includes this as a lifecycle regression
+scenario.
 
 ### Theming as application identity
 

@@ -6,6 +6,69 @@ Dialog4D follows Semantic Versioning for public releases.
 
 ---
 
+## 1.0.2 — 2026-06-21
+
+### Fixed
+
+- Fixed an Android/FMX teardown crash that could occur when a
+  `MessageDialogAsync` result callback closes the same host/main form that owns
+  the Dialog4D context.
+- Changed the registry form-hook destruction path so `OnFormDestroyed` runs
+  synchronously when hook destruction is already executing on the main thread.
+- Kept asynchronous registry cleanup only as a defensive fallback for unexpected
+  off-main-thread form destruction.
+- Removed the teardown window where per-form registry cleanup could remain
+  queued while Android application shutdown was already disposing the main form
+  and process-wide Dialog4D state.
+
+### Added
+
+- Added optional internal lifecycle trace support in `Dialog4D.pas`, controlled
+  by the `DIALOG4D_TRACE` compiler directive and disabled by default.
+- Added BasicDemo Section 11 — Lifecycle / regression scenarios.
+- Added example 11.1, `Regression: Close Host Form`, based on the reported
+  Android teardown scenario.
+
+### Changed
+
+- Updated form-lifecycle comments and runtime history to document the
+  owner-destroying cleanup contract, the inline main-thread cleanup path, and
+  the queued fallback path.
+- Updated the BasicDemo header and section list to include lifecycle regression
+  scenarios.
+- Kept the regression demo close-confirmation example faithful to the reported
+  button pattern: `[mbOk, mbCancel]`, default `mbCancel`, and close on `mrOk`.
+
+### Documentation
+
+- Updated `README.md` for Dialog4D 1.0.2 and documented the host-form close
+  scenario as supported behavior.
+- Updated `docs/Architecture.md` to describe registry form-hook cleanup,
+  owner-destroying state, inline main-thread `OnFormDestroyed`, and optional
+  lifecycle tracing.
+- Updated `docs/Guide_en.md` and `docs/Guide_pt-BR.md` with a short supported
+  scenario showing a result callback closing the host form.
+
+### Tests
+
+- Confirmed the DUnitX suite passes with 65 tests.
+- Validated the regression scenario on Android with `logcat`: with trace
+  enabled, cleanup runs through `FormHook.Destroy inline OnFormDestroyed`; with
+  trace disabled, the process exits cleanly without `Fatal signal`, `SIGABRT`,
+  `crash_dump`, or `tombstoned` entries.
+- Validated the Windows run with no memory leak.
+
+### Compatibility
+
+- No public API signature changes.
+- Existing Dialog4D usage remains compatible.
+- Closing the host form from a `MessageDialogAsync` result callback is now an
+  explicitly supported lifecycle scenario.
+- The internal trace directive is diagnostic-only and remains disabled by
+  default.
+
+---
+
 ## 1.0.1 — 2026-05-01
 
 ### Fixed

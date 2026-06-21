@@ -44,6 +44,18 @@
       immutable snapshots, not through the mutable loop variable itself.
 
   History:
+    1.0.2 — 2026-06-21 — Android teardown regression scenario.
+      • Added Section 11 — Lifecycle / regression scenarios.
+      • Added example 11.1, "Regression: Close Host Form", based on a real
+        Android teardown bug report.
+      • The new scenario validates that MessageDialogAsync can confirm closing
+        the same form that hosts Dialog4D.
+      • The example intentionally keeps the original reported button pattern
+        ([mbOk, mbCancel], default mbCancel, close on mrOk) to preserve
+        regression fidelity.
+      • No Dialog4D runtime behavior is implemented in this demo unit; the
+        related runtime fix is documented in Dialog4D.pas 1.0.2.
+
     1.0.1 — 2026-05-01 — Demo wording and queue callback correction.
       • Fixed example 5.1 (Queue burst from TTask) so each dialog callback logs
         the correct dialog index.
@@ -187,6 +199,7 @@ type
     ButtonCustomAllRoles:           TButton;
     ButtonCustomSessionExpiry:      TButton;
     ButtonCustomAwaitWorker:        TButton;
+    ButtonCloseHostForm: TButton;
 
     procedure FormCreate(Sender: TObject);
 
@@ -250,6 +263,7 @@ type
     procedure ButtonCustomAllRolesClick(Sender: TObject);
     procedure ButtonCustomSessionExpiryClick(Sender: TObject);
     procedure ButtonCustomAwaitWorkerClick(Sender: TObject);
+    procedure ButtonCloseHostFormClick(Sender: TObject);
 
   private
     FTelemetryEnabled: Boolean;
@@ -1909,6 +1923,26 @@ begin
       end;
     end);
   end);
+end;
+
+{ =================================================== }
+{ == Section 11 — Lifecycle / regression scenarios == }
+{ =================================================== }
+
+procedure TFormMain.ButtonCloseHostFormClick(Sender: TObject);
+begin
+  // Regression scenario based on a real Android teardown bug report:
+  // the dialog confirms closing the same form that hosts Dialog4D.
+  TDialog4D.MessageDialogAsync(
+    'Exit the application?',
+    TMsgDlgType.mtConfirmation,
+    [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+    TMsgDlgBtn.mbCancel,
+    procedure(const AResult: TModalResult)
+    begin
+      if AResult = mrOk then
+        Close;
+    end);
 end;
 
 end.

@@ -12,8 +12,8 @@
 
   Author        : Eduardo P. Araujo
   Created       : 2026-04-26
-  Last modified : 2026-05-01
-  Version       : 1.0.1
+  Last modified : 2026-06-21
+  Version       : 1.0.2
 
   Notes:
     - Dialog presentation is pure FMX — no native OS dialog APIs are used.
@@ -44,8 +44,9 @@
 
     - Per-form state cleanup is driven by a form-owned registry hook. When
       the form is destroyed, the registry marks the per-form state as
-      owner-destroying and schedules cleanup asynchronously to the main
-      thread.
+      owner-destroying and cleans the per-form state synchronously if the
+      hook destructor is already running on the main thread. The queued path
+      remains only as a defensive fallback for off-main-thread teardown.
 
     - The final application-callback path claims ownership of the active
       request snapshot before invoking user code. This prevents the active
@@ -53,7 +54,30 @@
       queued final callback path when form destruction is re-entered during
       callback processing.
 
+    - Lifecycle diagnostic trace code is kept in this unit and is disabled by
+      default. To enable Android teardown diagnostics, activate the
+      DIALOG4D_TRACE directive below by removing the leading dot. To disable
+      it again, restore the leading dot.
+
   History:
+    1.0.2 — 2026-06-21 — Android host-form teardown cleanup fix.
+      • Fixed a lifecycle crash exposed when MessageDialogAsync invokes a
+        result callback that closes the host/main form, especially during
+        Android application teardown.
+      • Root cause: the form hook marked the per-form state as
+        owner-destroying, but always deferred OnFormDestroyed with
+        QueueOnMainThread, leaving registry cleanup to a later main-loop turn
+        while the application could already be tearing down.
+      • Solution: when the hook destructor is already on the main thread, the
+        registry cleanup now runs synchronously. The queued cleanup path is
+        kept only as a defensive fallback for off-main-thread destruction.
+      • Lifecycle trace instrumentation was kept in the unit but disabled by
+        default. Enable it by removing the leading dot from the
+        DIALOG4D_TRACE directive below; disable it again by restoring the
+        leading dot. The trace writes [Dialog4D] messages through
+        FMX.Types.Log.d and is intended only for lifecycle/teardown
+        diagnostics.
+
     1.0.1 — 2026-05-01 — Defensive contract and lifetime correction.
       • Moved automatic parent-form resolution into the main-thread execution
         path, avoiding Screen.ActiveForm/Application.MainForm access from
@@ -101,6 +125,12 @@
 *}
 
 unit Dialog4D;
+
+{.$DEFINE DIALOG4D_TRACE}
+// Lifecycle diagnostic switch. Disabled by default.
+// To enable Android teardown logs, change the directive above to:
+// {$DEFINE DIALOG4D_TRACE}
+// To disable again, restore the leading dot.
 
 interface
 
@@ -317,6 +347,26 @@ uses
   Dialog4D.Internal.Queue,
   Dialog4D.TextProvider.Default;
 
+function Dialog4DPtr(const AObject: TObject): string;
+begin
+  Result := '$' + IntToHex(NativeUInt(Pointer(AObject)), SizeOf(Pointer) * 2);
+end;
+
+function Dialog4DThreadInfo: string;
+begin
+  if TThread.CurrentThread.ThreadID = MainThreadID then
+    Result := 'main'
+  else
+    Result := Format('worker current=%d main=%d', [TThread.CurrentThread.ThreadID, MainThreadID]);
+end;
+
+procedure Dialog4DTrace(const AMessage: string);
+begin
+  {$IFDEF DIALOG4D_TRACE}
+  FMX.Types.Log.d('[Dialog4D] ' + AMessage);
+  {$ENDIF}
+end;
+
 { ====================== }
 { == Request snapshot == }
 { ====================== }
@@ -445,8 +495,9 @@ type
   /// <remarks>
   /// <para>
   /// When the form is destroyed (and consequently its owned components), this
-  /// hook's destructor schedules registry cleanup on the main thread so any
-  /// queued requests for that form are discarded safely.
+  /// hook marks the registry state as owner-destroying and cleans the per-form
+  /// registry state synchronously when already on the main thread. The queued
+  /// path is kept only as a defensive fallback for off-main-thread teardown.
   /// </para>
   /// </remarks>
   TDialog4DFormHook = class(TComponent)
@@ -518,10 +569,23 @@ destructor TDialog4DFormState.Destroy;
 var
   LRequest: TDialog4DRequest;
 begin
+  Dialog4DTrace(Format(
+    'FormState.Destroy begin State=%s Active=%s OwnerDestroying=%s QueueCount=%d ActiveRequest=%s ActiveHost=%s',
+    [
+      Dialog4DPtr(Self),
+      BoolToStr(Active, True),
+      BoolToStr(OwnerDestroying, True),
+      Queue.Count,
+      Dialog4DPtr(ActiveRequest),
+      Dialog4DPtr(ActiveHost)
+    ]
+  ));
+
   if Assigned(Queue) then
     while Queue.Count > 0 do
     begin
       LRequest := Queue.Dequeue;
+      Dialog4DTrace(Format('FormState.Destroy free queued request Request=%s', [Dialog4DPtr(LRequest)]));
       LRequest.Free;
     end;
 
@@ -529,11 +593,14 @@ begin
   begin
     LRequest := ActiveRequest;
     ActiveRequest := nil;
+    Dialog4DTrace(Format('FormState.Destroy free active request Request=%s', [Dialog4DPtr(LRequest)]));
     LRequest.Free;
   end;
 
   ActiveHost := nil;
   Queue.Free;
+
+  Dialog4DTrace(Format('FormState.Destroy end State=%s', [Dialog4DPtr(Self)]));
 
   inherited;
 end;
@@ -606,18 +673,22 @@ destructor TDialog4DFormHook.Destroy;
   Form-destruction notification.
 
   Strategy
-  - Capture FForm into a local variable and clear the field before queuing
-    cleanup. The hook itself is being destroyed by the parent form.
-  - Mark the form state as owner-destroying immediately, while the form object
-    is still in the destruction path. This lets any already queued final
-    callback skip the application OnResult and avoid draining the FIFO.
-  - Schedule registry cleanup asynchronously to the main thread. This allows
-    the form's own component/visual teardown to continue before pending
-    requests are discarded and the per-form state is removed.
+  - Capture FForm into a local variable and clear the field immediately. The
+    hook itself is being destroyed by the parent form.
+  - Mark the form state as owner-destroying while the form is still in its
+    destruction path. This lets already queued final callbacks skip the user
+    OnResult and avoid draining the FIFO.
+  - If destruction is already running on the main thread, run registry cleanup
+    synchronously. This avoids leaving a queued cleanup closure alive during
+    application teardown, especially on Android when the main form is closing.
+  - If destruction ever happens off the main thread, keep the asynchronous
+    queue path as a defensive fallback.
 
   Invariants
-  - GRegistry may be freed during application shutdown between queueing and
-    dispatch; the queued closure re-checks before use.
+  - OnFormDestroyed only removes per-form registry state and frees data-only
+    request snapshots. It must not touch the visual tree.
+  - GRegistry may be finalized during application shutdown before a fallback
+    queued cleanup runs; the queued closure re-checks before use.
 *)
 var
   LForm: TCommonCustomForm;
@@ -625,19 +696,52 @@ begin
   LForm := FForm;
   FForm := nil;
 
-  if Assigned(LForm) and Assigned(GRegistry) then
-  begin
-    GRegistry.MarkFormDestroying(LForm);
+  Dialog4DTrace(Format(
+    'FormHook.Destroy begin Hook=%s Form=%s Thread=%s GRegistryAssigned=%s',
+    [Dialog4DPtr(Self), Dialog4DPtr(LForm), Dialog4DThreadInfo, BoolToStr(Assigned(GRegistry), True)]
+  ));
 
-    QueueOnMainThread(
-      procedure
+  try
+    if Assigned(LForm) and Assigned(GRegistry) then
+    begin
+      Dialog4DTrace(Format('FormHook.Destroy MarkFormDestroying Form=%s', [Dialog4DPtr(LForm)]));
+      GRegistry.MarkFormDestroying(LForm);
+
+      if IsMainThreadSafe then
       begin
-        if Assigned(GRegistry) then
-          GRegistry.OnFormDestroyed(LForm);
-      end);
-  end;
+        Dialog4DTrace(Format('FormHook.Destroy inline OnFormDestroyed begin Form=%s', [Dialog4DPtr(LForm)]));
+        GRegistry.OnFormDestroyed(LForm);
+        Dialog4DTrace(Format('FormHook.Destroy inline OnFormDestroyed end Form=%s', [Dialog4DPtr(LForm)]));
+      end
+      else
+      begin
+        Dialog4DTrace(Format('FormHook.Destroy queue OnFormDestroyed Form=%s', [Dialog4DPtr(LForm)]));
+        QueueOnMainThread(
+          procedure
+          begin
+            Dialog4DTrace(Format(
+              'FormHook.Destroy queued OnFormDestroyed begin Form=%s Thread=%s GRegistryAssigned=%s',
+              [Dialog4DPtr(LForm), Dialog4DThreadInfo, BoolToStr(Assigned(GRegistry), True)]
+            ));
 
-  inherited;
+            if Assigned(GRegistry) then
+              GRegistry.OnFormDestroyed(LForm)
+            else
+              Dialog4DTrace(Format('FormHook.Destroy queued OnFormDestroyed skipped; GRegistry=nil Form=%s', [Dialog4DPtr(LForm)]));
+
+            Dialog4DTrace(Format('FormHook.Destroy queued OnFormDestroyed end Form=%s', [Dialog4DPtr(LForm)]));
+          end);
+      end;
+    end
+    else
+      Dialog4DTrace(Format(
+        'FormHook.Destroy cleanup skipped FormAssigned=%s GRegistryAssigned=%s',
+        [BoolToStr(Assigned(LForm), True), BoolToStr(Assigned(GRegistry), True)]
+      ));
+  finally
+    Dialog4DTrace(Format('FormHook.Destroy inherited Hook=%s', [Dialog4DPtr(Self)]));
+    inherited;
+  end;
 end;
 
 constructor TDialog4DRegistry.Create;
@@ -676,37 +780,75 @@ end;
 procedure TDialog4DRegistry.MarkFormDestroying(const AForm: TCommonCustomForm);
 var
   LState: TDialog4DFormState;
+  LFound: Boolean;
 begin
   if not Assigned(AForm) then
+  begin
+    Dialog4DTrace('Registry.MarkFormDestroying skipped; Form=nil');
     Exit;
+  end;
+
+  Dialog4DTrace(Format(
+    'Registry.MarkFormDestroying begin Form=%s Thread=%s',
+    [Dialog4DPtr(AForm), Dialog4DThreadInfo]
+  ));
+
+  LFound := False;
 
   FCrit.Acquire;
   try
-    if FMap.TryGetValue(AForm, LState) then
+    LFound := FMap.TryGetValue(AForm, LState);
+    if LFound then
       LState.OwnerDestroying := True;
   finally
     FCrit.Release;
   end;
+
+  Dialog4DTrace(Format(
+    'Registry.MarkFormDestroying end Form=%s StateFound=%s',
+    [Dialog4DPtr(AForm), BoolToStr(LFound, True)]
+  ));
 end;
 
 procedure TDialog4DRegistry.OnFormDestroyed(const AForm: TCommonCustomForm);
 var
   LState: TDialog4DFormState;
+  LFound: Boolean;
 begin
   if not Assigned(AForm) then
+  begin
+    Dialog4DTrace('Registry.OnFormDestroyed skipped; Form=nil');
     Exit;
+  end;
+
+  Dialog4DTrace(Format(
+    'Registry.OnFormDestroyed begin Form=%s Thread=%s',
+    [Dialog4DPtr(AForm), Dialog4DThreadInfo]
+  ));
 
   LState := nil;
+  LFound := False;
 
   FCrit.Acquire;
   try
-    if FMap.TryGetValue(AForm, LState) then
+    LFound := FMap.TryGetValue(AForm, LState);
+    if LFound then
       FMap.Remove(AForm);
   finally
     FCrit.Release;
   end;
 
+  Dialog4DTrace(Format(
+    'Registry.OnFormDestroyed removed Form=%s StateFound=%s State=%s',
+    [Dialog4DPtr(AForm), BoolToStr(LFound, True), Dialog4DPtr(LState)]
+  ));
+
   LState.Free;
+
+  Dialog4DTrace(Format(
+    'Registry.OnFormDestroyed end Form=%s',
+    [Dialog4DPtr(AForm)]
+  ));
 end;
 
 procedure TDialog4DRegistry.CloseActiveDialog(const AForm: TCommonCustomForm;
@@ -873,6 +1015,11 @@ begin
         LButtonList.ToArray, LRequest.Cancelable,
         procedure(const AResult: TModalResult)
         begin
+          Dialog4DTrace(Format(
+            'Host.OnResult received; queue final callback Form=%s Request=%s Host=%s Result=%d',
+            [Dialog4DPtr(LForm), Dialog4DPtr(LRequest), Dialog4DPtr(LHost), Integer(AResult)]
+          ));
+
           QueueOnMainThread(
             procedure
             var
@@ -882,6 +1029,11 @@ begin
               LStateLocal: TDialog4DFormState;
               LClaimedState: TDialog4DFormState;
             begin
+              Dialog4DTrace(Format(
+                'FinalCallback begin Form=%s Request=%s Host=%s Result=%d Thread=%s',
+                [Dialog4DPtr(LForm), Dialog4DPtr(LRequest), Dialog4DPtr(LHost), Integer(AResult), Dialog4DThreadInfo]
+              ));
+
               LClaimedRequest := False;
               LCanInvokeCallback := False;
               LCanDrainQueue := False;
@@ -902,38 +1054,77 @@ begin
 
                   if LStateLocal.ActiveHost = LHost then
                     LStateLocal.ActiveHost := nil;
-                end;
+
+                  Dialog4DTrace(Format(
+                    'FinalCallback state found State=%s OwnerDestroying=%s ClaimRequest=%s CanInvoke=%s',
+                    [
+                      Dialog4DPtr(LStateLocal),
+                      BoolToStr(LStateLocal.OwnerDestroying, True),
+                      BoolToStr(LClaimedRequest, True),
+                      BoolToStr(LCanInvokeCallback, True)
+                    ]
+                  ));
+                end
+                else
+                  Dialog4DTrace(Format('FinalCallback state missing Form=%s', [Dialog4DPtr(LForm)]));
               finally
                 FCrit.Release;
               end;
 
               try
-                if LClaimedRequest and LCanInvokeCallback and
-                  Assigned(LRequest.OnResult) then
+                if LClaimedRequest and LCanInvokeCallback and Assigned(LRequest.OnResult) then
+                begin
+                  Dialog4DTrace(Format('FinalCallback invoke user OnResult Request=%s Result=%d', [Dialog4DPtr(LRequest), Integer(AResult)]));
                   LRequest.OnResult(AResult);
+                  Dialog4DTrace(Format('FinalCallback returned from user OnResult Request=%s', [Dialog4DPtr(LRequest)]));
+                end
+                else
+                  Dialog4DTrace(Format(
+                    'FinalCallback skip user OnResult ClaimRequest=%s CanInvoke=%s AssignedOnResult=%s',
+                    [
+                      BoolToStr(LClaimedRequest, True),
+                      BoolToStr(LCanInvokeCallback, True),
+                      BoolToStr(Assigned(LRequest.OnResult), True)
+                    ]
+                  ));
               finally
                 // The final facade callback owns the host after a normal
                 // close. The request is freed here only if this callback
                 // successfully claimed ActiveRequest above.
+                Dialog4DTrace(Format('FinalCallback free host Host=%s', [Dialog4DPtr(LHost)]));
                 LHost.Free;
 
                 if LClaimedRequest then
+                begin
+                  Dialog4DTrace(Format('FinalCallback free request Request=%s', [Dialog4DPtr(LRequest)]));
                   LRequest.Free;
+                end;
 
                 if LClaimedRequest and Assigned(GRegistry) then
                 begin
                   FCrit.Acquire;
                   try
-                    if FMap.TryGetValue(LForm, LStateLocal) and
-                      (LStateLocal = LClaimedState) then
+                    if FMap.TryGetValue(LForm, LStateLocal) and (LStateLocal = LClaimedState) then
                       LCanDrainQueue := not LStateLocal.OwnerDestroying;
                   finally
                     FCrit.Release;
                   end;
 
+                  Dialog4DTrace(Format(
+                    'FinalCallback drain decision Form=%s CanDrain=%s',
+                    [Dialog4DPtr(LForm), BoolToStr(LCanDrainQueue, True)]
+                  ));
+
                   if LCanDrainQueue then
                     GRegistry.OnDialogFinished(LForm);
-                end;
+                end
+                else
+                  Dialog4DTrace(Format(
+                    'FinalCallback no drain ClaimRequest=%s GRegistryAssigned=%s',
+                    [BoolToStr(LClaimedRequest, True), BoolToStr(Assigned(GRegistry), True)]
+                  ));
+
+                Dialog4DTrace(Format('FinalCallback end Form=%s', [Dialog4DPtr(LForm)]));
               end;
             end);
         end, LRequest.DialogType);
@@ -1030,17 +1221,31 @@ var
   LNextRequest: TDialog4DRequest;
 begin
   if not Assigned(AForm) then
+  begin
+    Dialog4DTrace('Registry.OnDialogFinished skipped; Form=nil');
     Exit;
+  end;
+
+  Dialog4DTrace(Format(
+    'Registry.OnDialogFinished begin Form=%s Thread=%s',
+    [Dialog4DPtr(AForm), Dialog4DThreadInfo]
+  ));
 
   LNextRequest := nil;
 
   FCrit.Acquire;
   try
     if not FMap.TryGetValue(AForm, LState) then
+    begin
+      Dialog4DTrace(Format('Registry.OnDialogFinished state missing Form=%s', [Dialog4DPtr(AForm)]));
       Exit;
+    end;
 
     if LState.OwnerDestroying then
+    begin
+      Dialog4DTrace(Format('Registry.OnDialogFinished skipped; owner destroying Form=%s State=%s', [Dialog4DPtr(AForm), Dialog4DPtr(LState)]));
       Exit;
+    end;
 
     LState.Active := False;
 
@@ -1049,12 +1254,22 @@ begin
       LNextRequest := LState.Queue.Dequeue;
       LState.Active := True;
     end;
+
+    Dialog4DTrace(Format(
+      'Registry.OnDialogFinished state updated Form=%s State=%s QueueRemaining=%d NextRequest=%s',
+      [Dialog4DPtr(AForm), Dialog4DPtr(LState), LState.Queue.Count, Dialog4DPtr(LNextRequest)]
+    ));
   finally
     FCrit.Release;
   end;
 
   if Assigned(LNextRequest) then
+  begin
+    Dialog4DTrace(Format('Registry.OnDialogFinished show next Request=%s', [Dialog4DPtr(LNextRequest)]));
     ShowRequestOnUI(LNextRequest);
+  end
+  else
+    Dialog4DTrace(Format('Registry.OnDialogFinished no next request Form=%s', [Dialog4DPtr(AForm)]));
 end;
 
 { =============== }
@@ -1439,4 +1654,5 @@ finalization
 FreeAndNil(GRegistry);
 
 end.
+
 

@@ -586,6 +586,20 @@ object FormMain: TFormMain
       Text = '10.5  Custom worker await'
       OnClick = ButtonCustomAwaitWorkerClick
     end
+    object ButtonCloseHostForm: TButton
+      Align = Top
+      Margins.Left = 5.000000000000000000
+      Margins.Right = 5.000000000000000000
+      Margins.Bottom = 5.000000000000000000
+      Position.X = 5.000000000000000000
+      Position.Y = 1916.000000000000000000
+      Size.Width = 364.000000000000000000
+      Size.Height = 44.000000000000000000
+      Size.PlatformDefault = False
+      TabOrder = 39
+      Text = '11.1 Regression: Close Host Form'
+      OnClick = ButtonCloseHostFormClick
+    end
   end
   object ButtonTelemetryEnable: TButton
     Align = Top

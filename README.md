@@ -76,6 +76,22 @@ TDialog4D.MessageDialogAsync(
 );
 ```
 
+**Close host form from result callback**
+
+```delphi
+TDialog4D.MessageDialogAsync(
+  'Exit the application?',
+  TMsgDlgType.mtConfirmation,
+  [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+  TMsgDlgBtn.mbCancel,
+  procedure(const AResult: TModalResult)
+  begin
+    if AResult = mrOk then
+      Close;
+  end
+);
+```
+
 **Custom buttons with semantic roles**
 
 ```delphi
@@ -232,7 +248,14 @@ This README remains the main entry point, while the `docs/` folder holds support
 
 Release history is maintained in [CHANGELOG.md](CHANGELOG.md).
 
-Current release: **1.0.1 — 2026-05-01**.
+Current release: **1.0.2 — 2026-06-21**.
+
+Highlights:
+
+- Fixed an Android/FMX teardown crash when a `MessageDialogAsync` result
+  callback closes the host/main form.
+- Added a lifecycle regression scenario to the BasicDemo.
+- Added optional internal lifecycle trace support, disabled by default.
 
 ---
 
@@ -259,6 +282,26 @@ TDialog4D.MessageDialogAsync(
 TDialog4D.CloseDialog(MainForm, mrCancel);
 ```
 
+### Closing the host form after confirmation
+
+```delphi
+TDialog4D.MessageDialogAsync(
+  'Exit the application?',
+  TMsgDlgType.mtConfirmation,
+  [TMsgDlgBtn.mbOk, TMsgDlgBtn.mbCancel],
+  TMsgDlgBtn.mbCancel,
+  procedure(const AResult: TModalResult)
+  begin
+    if AResult = mrOk then
+      Close;
+  end
+);
+```
+
+This is a supported scenario: the dialog result callback may close the same form
+that hosts Dialog4D. The per-form registry state is cleaned safely during
+form teardown.
+
 ---
 
 ## Features
@@ -272,6 +315,7 @@ TDialog4D.CloseDialog(MainForm, mrCancel);
 - Structured telemetry with close-reason tracking
 - Desktop keyboard handling and Android back-button support
 - Safe suppression of callbacks during owner destruction
+- Safe host-form teardown when a result callback closes the form
 
 ---
 
@@ -288,6 +332,12 @@ At a high level, a request can emit these lifecycle events on the normal close p
 When the parent form begins destruction while a dialog is active, Dialog4D emits
 **OwnerDestroying**. This event represents an owner-destruction path, not a
 regular sixth step in the normal close sequence.
+
+Closing the host form from a result callback is also supported. A common case is
+an exit confirmation where `mrOk` closes the main form. Dialog4D marks the
+per-form state as owner-destroying and cleans the registry state during form
+teardown so queued requests and callbacks are not allowed to outlive their form
+context.
 
 `CallbackInvoked` describes Dialog4D's close-callback pipeline. It should not be
 interpreted as a guarantee that arbitrary downstream application code completed
@@ -412,7 +462,7 @@ TDialog4D.ConfigureTelemetry(
 
 At a unit level, the mechanism is split into clear responsibilities:
 
-- `Dialog4D` — public API facade and per-form FIFO orchestration
+- `Dialog4D` — public API facade, per-form FIFO orchestration, and form-lifecycle registry cleanup
 - `Dialog4D.Types` — public contracts, theme, telemetry, custom buttons
 - `Dialog4D.Host.FMX` — internal FMX visual host
 - `Dialog4D.Await` — worker-thread await helper
@@ -496,7 +546,10 @@ It is organized into:
 The demo acts both as:
 
 - a practical usage reference; and
-- a manual validation surface for the visual host.
+- a manual validation surface for the visual host and lifecycle scenarios.
+
+The final section of the BasicDemo includes lifecycle/regression scenarios,
+including closing the same form that hosts Dialog4D from a result callback.
 
 ---
 
@@ -553,7 +606,13 @@ The automated suite currently contains **65 DUnitX tests** focused on determinis
 - facade-level validation for manually constructed invalid custom buttons;
 - await guard behavior and timeout behavior without callback invocation.
 
-Visual host integration is validated through the bundled demo rather than automated FMX rendering tests. To run the suite, open `tests/project/Dialog4D.Tests.dproj` in Delphi and execute the project.
+Visual host integration and form-lifecycle regression scenarios are validated
+through the bundled demo rather than automated FMX rendering tests. To run the
+suite, open `tests/project/Dialog4D.Tests.dproj` in Delphi and execute the
+project.
+
+For Android teardown validation, the BasicDemo includes a regression scenario
+that confirms closing the host form from a `MessageDialogAsync` result callback.
 
 ---
 
@@ -689,7 +748,7 @@ This version of **Dialog4D** is focused on:
 - configurable theming, including a snapshot model and a default-button highlight;
 - pluggable text providers for localization;
 - structured telemetry with seven lifecycle events and close-reason tracking;
-- form-destruction safety with callback suppression;
+- form-destruction and host-form teardown safety with callback suppression;
 - an adapter facade for common callback-based `FMX.DialogService`-style calls.
 
 At this stage, it is **not** intended to:
