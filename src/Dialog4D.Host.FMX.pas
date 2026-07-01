@@ -2018,14 +2018,10 @@ begin
   FOverlay.Opacity := 0;
   OnCloseFinished(nil);
 {$ELSE}
-  if Assigned(FAnimClose) then
-  begin
-    FAnimClose.StartValue := FOverlay.Opacity;
-    FAnimClose.StopValue := 0;
-    FAnimClose.Start;
-  end
-  else
-    OnCloseFinished(nil);
+  // Defer close finalization instead of running it from an animation callback.
+  // This keeps FMX visual-tree teardown out of input and animation dispatch.
+  FOverlay.Opacity := 0;
+  OnCloseFinished(nil);
 {$ENDIF}
 end;
 
@@ -2132,13 +2128,9 @@ begin
   if FState <> dgsClosing then
     Exit;
 
-{$IFDEF ANDROID}
-  // Android: always defer destruction to avoid destroying the visual tree
-  // inline during touch/gesture processing.
+  // Always defer destruction to avoid disposing the visual tree inline while FMX
+  // is still dispatching input or animation callbacks.
   FinalizeCloseAsync;
-{$ELSE}
-  FinalizeCloseNow;
-{$ENDIF}
 end;
 
 procedure TDialog4DHostFMX.Cleanup;

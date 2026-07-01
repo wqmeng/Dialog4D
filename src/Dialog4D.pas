@@ -60,17 +60,18 @@
       it again, restore the leading dot.
 
   History:
-    1.0.2 — 2026-06-21 — Android host-form teardown cleanup fix.
+    1.0.2 — 2026-06-21 — Host-form teardown cleanup fix.
       • Fixed a lifecycle crash exposed when MessageDialogAsync invokes a
-        result callback that closes the host/main form, especially during
-        Android application teardown.
+        result callback that closes the host/main form during application
+        teardown.
       • Root cause: the form hook marked the per-form state as
         owner-destroying, but always deferred OnFormDestroyed with
         QueueOnMainThread, leaving registry cleanup to a later main-loop turn
         while the application could already be tearing down.
-      • Solution: when the hook destructor is already on the main thread, the
-        registry cleanup now runs synchronously. The queued cleanup path is
-        kept only as a defensive fallback for off-main-thread destruction.
+      • Solution: registry entries now use stable form-pointer keys, and the
+        hook destructor extracts the per-form state while the owner form is
+        still valid. Deferred cleanup carries only the extracted state, so
+        shutdown code never hashes or dereferences a stale form object.
       • Lifecycle trace instrumentation was kept in the unit but disabled by
         default. Enable it by removing the leading dot from the
         DIALOG4D_TRACE directive below; disable it again by restoring the
@@ -542,6 +543,11 @@ begin
   ActiveHost := nil;
 end;
 
+function Dialog4DFormKey(const AForm: TCommonCustomForm): NativeUInt; inline;
+begin
+  Result := NativeUInt(Pointer(AForm));
+end;
+
 destructor TDialog4DFormState.Destroy;
 (*
   Per-form state teardown.
@@ -647,9 +653,11 @@ type
   TDialog4DRegistry = class
   private
     FCrit: TCriticalSection;
-    FMap: TDictionary<TCommonCustomForm, TDialog4DFormState>;
+    FMap: TDictionary<NativeUInt, TDialog4DFormState>;
 
     function GetOrCreateStateLocked(const AForm: TCommonCustomForm)
+      : TDialog4DFormState;
+    function ExtractFormState(const AForm: TCommonCustomForm)
       : TDialog4DFormState;
     procedure ShowRequestOnUI(const AReq: TDialog4DRequest);
 
@@ -678,23 +686,26 @@ destructor TDialog4DFormHook.Destroy;
   - Mark the form state as owner-destroying while the form is still in its
     destruction path. This lets already queued final callbacks skip the user
     OnResult and avoid draining the FIFO.
-  - If destruction is already running on the main thread, run registry cleanup
-    synchronously. This avoids leaving a queued cleanup closure alive during
-    application teardown, especially on Android when the main form is closing.
-  - If destruction ever happens off the main thread, keep the asynchronous
-    queue path as a defensive fallback.
+  - Extract the per-form state while the form object is still valid. Any
+    deferred cleanup then carries only the extracted state, never a stale form
+    object pointer that a dictionary lookup would need to hash later.
+  - If destruction is already running on the main thread, free the extracted
+    state synchronously. If destruction ever happens off the main thread, keep
+    the asynchronous queue path as a defensive fallback.
 
   Invariants
-  - OnFormDestroyed only removes per-form registry state and frees data-only
+  - ExtractFormState only removes per-form registry state and returns data-only
     request snapshots. It must not touch the visual tree.
-  - GRegistry may be finalized during application shutdown before a fallback
-    queued cleanup runs; the queued closure re-checks before use.
+  - The queued fallback must not dereference the owner form after the hook
+    destructor returns.
 *)
 var
   LForm: TCommonCustomForm;
+  LState: TDialog4DFormState;
 begin
   LForm := FForm;
   FForm := nil;
+  LState := nil;
 
   Dialog4DTrace(Format(
     'FormHook.Destroy begin Hook=%s Form=%s Thread=%s GRegistryAssigned=%s',
@@ -706,30 +717,25 @@ begin
     begin
       Dialog4DTrace(Format('FormHook.Destroy MarkFormDestroying Form=%s', [Dialog4DPtr(LForm)]));
       GRegistry.MarkFormDestroying(LForm);
+      LState := GRegistry.ExtractFormState(LForm);
 
       if IsMainThreadSafe then
       begin
-        Dialog4DTrace(Format('FormHook.Destroy inline OnFormDestroyed begin Form=%s', [Dialog4DPtr(LForm)]));
-        GRegistry.OnFormDestroyed(LForm);
-        Dialog4DTrace(Format('FormHook.Destroy inline OnFormDestroyed end Form=%s', [Dialog4DPtr(LForm)]));
+        Dialog4DTrace(Format('FormHook.Destroy free extracted state inline Form=%s State=%s', [Dialog4DPtr(LForm), Dialog4DPtr(LState)]));
+        LState.Free;
       end
       else
       begin
-        Dialog4DTrace(Format('FormHook.Destroy queue OnFormDestroyed Form=%s', [Dialog4DPtr(LForm)]));
+        Dialog4DTrace(Format('FormHook.Destroy queue extracted state free Form=%s State=%s', [Dialog4DPtr(LForm), Dialog4DPtr(LState)]));
         QueueOnMainThread(
           procedure
           begin
             Dialog4DTrace(Format(
-              'FormHook.Destroy queued OnFormDestroyed begin Form=%s Thread=%s GRegistryAssigned=%s',
-              [Dialog4DPtr(LForm), Dialog4DThreadInfo, BoolToStr(Assigned(GRegistry), True)]
+              'FormHook.Destroy queued state free begin State=%s Thread=%s',
+              [Dialog4DPtr(LState), Dialog4DThreadInfo]
             ));
-
-            if Assigned(GRegistry) then
-              GRegistry.OnFormDestroyed(LForm)
-            else
-              Dialog4DTrace(Format('FormHook.Destroy queued OnFormDestroyed skipped; GRegistry=nil Form=%s', [Dialog4DPtr(LForm)]));
-
-            Dialog4DTrace(Format('FormHook.Destroy queued OnFormDestroyed end Form=%s', [Dialog4DPtr(LForm)]));
+            LState.Free;
+            Dialog4DTrace('FormHook.Destroy queued state free end');
           end);
       end;
     end
@@ -748,12 +754,12 @@ constructor TDialog4DRegistry.Create;
 begin
   inherited Create;
   FCrit := TCriticalSection.Create;
-  FMap := TDictionary<TCommonCustomForm, TDialog4DFormState>.Create;
+  FMap := TDictionary<NativeUInt, TDialog4DFormState>.Create;
 end;
 
 destructor TDialog4DRegistry.Destroy;
 var
-  Pair: TPair<TCommonCustomForm, TDialog4DFormState>;
+  Pair: TPair<NativeUInt, TDialog4DFormState>;
 begin
   // No locking needed here — destruction of the registry happens during
   // unit finalization, after all forms (and therefore all hooks) are gone.
@@ -769,11 +775,28 @@ function TDialog4DRegistry.GetOrCreateStateLocked
   (const AForm: TCommonCustomForm): TDialog4DFormState;
 begin
   // Caller must already hold FCrit.
-  if not FMap.TryGetValue(AForm, Result) then
+  if not FMap.TryGetValue(Dialog4DFormKey(AForm), Result) then
   begin
     Result := TDialog4DFormState.Create;
     Result.Hook := TDialog4DFormHook.Create(AForm, AForm);
-    FMap.Add(AForm, Result);
+    FMap.Add(Dialog4DFormKey(AForm), Result);
+  end;
+end;
+
+function TDialog4DRegistry.ExtractFormState
+  (const AForm: TCommonCustomForm): TDialog4DFormState;
+begin
+  Result := nil;
+
+  if not Assigned(AForm) then
+    Exit;
+
+  FCrit.Acquire;
+  try
+    if FMap.TryGetValue(Dialog4DFormKey(AForm), Result) then
+      FMap.Remove(Dialog4DFormKey(AForm));
+  finally
+    FCrit.Release;
   end;
 end;
 
@@ -793,11 +816,9 @@ begin
     [Dialog4DPtr(AForm), Dialog4DThreadInfo]
   ));
 
-  LFound := False;
-
   FCrit.Acquire;
   try
-    LFound := FMap.TryGetValue(AForm, LState);
+    LFound := FMap.TryGetValue(Dialog4DFormKey(AForm), LState);
     if LFound then
       LState.OwnerDestroying := True;
   finally
@@ -813,7 +834,6 @@ end;
 procedure TDialog4DRegistry.OnFormDestroyed(const AForm: TCommonCustomForm);
 var
   LState: TDialog4DFormState;
-  LFound: Boolean;
 begin
   if not Assigned(AForm) then
   begin
@@ -826,21 +846,11 @@ begin
     [Dialog4DPtr(AForm), Dialog4DThreadInfo]
   ));
 
-  LState := nil;
-  LFound := False;
-
-  FCrit.Acquire;
-  try
-    LFound := FMap.TryGetValue(AForm, LState);
-    if LFound then
-      FMap.Remove(AForm);
-  finally
-    FCrit.Release;
-  end;
+  LState := ExtractFormState(AForm);
 
   Dialog4DTrace(Format(
     'Registry.OnFormDestroyed removed Form=%s StateFound=%s State=%s',
-    [Dialog4DPtr(AForm), BoolToStr(LFound, True), Dialog4DPtr(LState)]
+    [Dialog4DPtr(AForm), BoolToStr(Assigned(LState), True), Dialog4DPtr(LState)]
   ));
 
   LState.Free;
@@ -882,7 +892,7 @@ begin
   LHost := nil;
   FCrit.Acquire;
   try
-    if FMap.TryGetValue(AForm, LState) and not LState.OwnerDestroying then
+    if FMap.TryGetValue(Dialog4DFormKey(AForm), LState) and not LState.OwnerDestroying then
       LHost := LState.ActiveHost;
   finally
     FCrit.Release;
@@ -994,7 +1004,7 @@ begin
       LPublished := False;
       FCrit.Acquire;
       try
-        if FMap.TryGetValue(LForm, LState) and not LState.OwnerDestroying then
+        if FMap.TryGetValue(Dialog4DFormKey(LForm), LState) and not LState.OwnerDestroying then
         begin
           LState.ActiveRequest := LRequest;
           LState.ActiveHost := LHost;
@@ -1041,7 +1051,7 @@ begin
 
               FCrit.Acquire;
               try
-                if FMap.TryGetValue(LForm, LStateLocal) then
+                if FMap.TryGetValue(Dialog4DFormKey(LForm), LStateLocal) then
                 begin
                   LClaimedState := LStateLocal;
                   LCanInvokeCallback := not LStateLocal.OwnerDestroying;
@@ -1104,7 +1114,7 @@ begin
                 begin
                   FCrit.Acquire;
                   try
-                    if FMap.TryGetValue(LForm, LStateLocal) and (LStateLocal = LClaimedState) then
+                    if FMap.TryGetValue(Dialog4DFormKey(LForm), LStateLocal) and (LStateLocal = LClaimedState) then
                       LCanDrainQueue := not LStateLocal.OwnerDestroying;
                   finally
                     FCrit.Release;
@@ -1131,7 +1141,7 @@ begin
     except
       FCrit.Acquire;
       try
-        if FMap.TryGetValue(LForm, LState) then
+        if FMap.TryGetValue(Dialog4DFormKey(LForm), LState) then
         begin
           if LState.ActiveRequest = LRequest then
             LState.ActiveRequest := nil;
@@ -1235,7 +1245,7 @@ begin
 
   FCrit.Acquire;
   try
-    if not FMap.TryGetValue(AForm, LState) then
+    if not FMap.TryGetValue(Dialog4DFormKey(AForm), LState) then
     begin
       Dialog4DTrace(Format('Registry.OnDialogFinished state missing Form=%s', [Dialog4DPtr(AForm)]));
       Exit;
